@@ -1,0 +1,34 @@
+{
+  "name": "3d-viewer-app",
+  "version": "1.0.0",
+  "description": "Three.js viewer with sculpting (Electron)",
+  "main": "main.js",
+  "author": "Pontus",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron .",
+    "build:win": "electron-builder --win"
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.pontus.ThreeViewer",
+    "asar": true,
+    "files": [
+      "**/*"
+    ],
+    "directories": {
+      "buildResources": "assets"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "assets/icon.png"
+    }
+  }
+}

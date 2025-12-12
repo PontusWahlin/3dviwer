@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3D Sculpt – Sphere (Three.js)</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #0b0f14; color: #e7ecef; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Arial; }
+    #app { position: fixed; inset: 0; }
+    .hud { position: fixed; left: 12px; top: 12px; padding: 10px 12px; background: rgba(20,24,32,0.6); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; font-size: 14px; line-height: 1.35; max-width: 560px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap: wrap; margin-top: 8px; }
+    .btn { display:inline-block; padding: 6px 10px; border-radius: 8px; border:1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); color:#e7ecef; cursor:pointer; }
+    .btn:hover { background: rgba(255,255,255,0.12); }
+    .seg { display:flex; gap:6px; padding:4px; border-radius:10px; background: rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); }
+    .seg button { padding:6px 10px; border-radius:8px; border:1px solid transparent; background: transparent; color:#e7ecef; cursor:pointer; }
+    .seg button.active { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.18); }
+    label.slider { display:flex; gap:6px; align-items:center; }
+    input[type="range"] { accent-color: #4cc9f0; }
+    .error { position: fixed; right: 12px; top: 12px; padding: 10px 12px; background: rgba(200,40,60,0.15); border:1px solid rgba(255,80,110,0.4); color:#ffd7de; border-radius: 10px; font-size: 13px; max-width: 420px; display:none; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div class="hud">
+    <div><strong>3D Sculpt</strong> – New Sphere & borste (Inflate/Deflate/Smooth) + X-symmetri</div>
+    <div class="row">
+      <button id="newSphere" class="btn">New Sphere</button>
+      <div class="seg" role="tablist" aria-label="Brush type">
+        <button class="active" data-tool="inflate">Inflate</button>
+        <button data-tool="deflate">Deflate</button>
+        <button data-tool="smooth">Smooth</button>
+      </div>
+      <label class="slider">Radie <input id="radius" type="range" min="0.02" max="0.6" step="0.01" value="0.15"><span id="rLab">0.15</span></label>
+      <label class="slider">Styrka <input id="strength" type="range" min="0.05" max="1.0" step="0.05" value="0.3"><span id="sLab">0.30</span></label>
+      <label><input id="symX" type="checkbox" checked> X-symmetri</label>
+    </div>
+    <div style="margin-top:6px; opacity:0.85">Håll vänster mus ned för att skulptera. Orbit stängs av under stroke.</div>
+  </div>
+  <div id="error" class="error"></div>
+
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.164.1/build/three.module.js";
+    import { OrbitControls } from "https://unpkg.com/three@0.164.1/examples/jsm/controls/OrbitControls.js";
+
+    const ui = {
+      newSphere: document.getElementById('newSphere'),
+      r: document.getElementById('radius'), rLab: document.getElementById('rLab'),
+      s: document.getElementById('strength'), sLab: document.getElementById('sLab'),
+      symX: document.getElementById('symX'),
+      brushes: Array.from(document.querySelectorAll('[data-tool]'))
+    };
+    let tool = 'inflate';
+    ui.brushes.forEach(b=> b.addEventListener('click', ()=>{ ui.brushes.forEach(x=>x.classList.remove('active')); b.classList.add('active'); tool = b.dataset.tool; }));
+    const fmt = v => (Math.round(v*100)/100).toFixed(2);
+    ui.r.addEventListener('input', ()=> ui.rLab.textContent = fmt(parseFloat(ui.r.value)) );
+    ui.s.addEventListener('input', ()=> ui.sLab.textContent = fmt(parseFloat(ui.s.value)) );
+
+    const container = document.getElementById('app');
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    container.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b0f14);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 5000);
+    camera.position.set(3.5, 2.5, 4.5);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.1); dir.position.set(5,7,4); scene.add(dir);
+
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(40,40), new THREE.MeshStandardMaterial({ color: 0x11161d, metalness:0, roughness:1 }));
+    ground.rotation.x = -Math.PI/2; scene.add(ground);
+    const grid = new THREE.GridHelper(40,40,0x203040,0x101720); grid.position.y = 0.001; scene.add(grid);
+
+    let sculptMesh = null;
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const brushViz = new THREE.Mesh(new THREE.SphereGeometry(1,16,16), new THREE.MeshBasicMaterial({ wireframe:true, transparent:true, opacity:0.6 }));
+    brushViz.visible = false; scene.add(brushViz);
+
+    function makeSphere(){
+      if (sculptMesh) scene.remove(sculptMesh);
+      const geo = new THREE.SphereGeometry(1, 96, 96).toNonIndexed();
+      geo.computeVertexNormals();
+      geo.attributes.position.setUsage(THREE.DynamicDrawUsage);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xbddfff, metalness:0, roughness:0.9 });
+      sculptMesh = new THREE.Mesh(geo, mat);
+      scene.add(sculptMesh);
+    }
+    ui.newSphere.addEventListener('click', makeSphere);
+    makeSphere();
+
+    let isSculpting = false;
+    let lastHit = null;
+
+    function screenToRay(ev) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(ndc, camera);
+    }
+
+    function updateBrush(ev) {
+      if (!sculptMesh) return;
+      screenToRay(ev);
+      const isects = raycaster.intersectObject(sculptMesh, false);
+      if (isects.length) {
+        const hit = isects[0];
+        lastHit = hit;
+        brushViz.visible = true;
+        brushViz.position.copy(hit.point);
+        const radius = parseFloat(ui.r.value);
+        brushViz.scale.setScalar(radius);
+      } else {
+        brushViz.visible = false;
+        lastHit = null;
+      }
+    }
+
+    function falloff(d, r) {
+      if (d >= r) return 0.0;
+      const x = 1.0 - (d / r);
+      return x * x * (3 - 2 * x);
+    }
+
+    function sculptStroke(hit) {
+      if (!hit || !sculptMesh) return;
+      const geo = sculptMesh.geometry;
+      const pos = geo.attributes.position;
+      const nor = geo.attributes.normal;
+      const radius = parseFloat(ui.r.value);
+      const strength = parseFloat(ui.s.value);
+
+      const invM = sculptMesh.matrixWorld.clone().invert();
+      const hitLocal = hit.point.clone().applyMatrix4(invM);
+
+      const p = pos.array; const n = nor.array;
+      const v = new THREE.Vector3();
+      const vn = new THREE.Vector3();
+      const center = hitLocal;
+
+      const sym = ui.symX.checked;
+      const centerSym = center.clone(); centerSym.x = -centerSym.x;
+
+      const affected = [];
+      const affectedSym = [];
+      for (let i = 0; i < p.length; i += 3) {
+        v.set(p[i], p[i+1], p[i+2]);
+        const d = v.distanceTo(center);
+        if (d <= radius) affected.push({i, d});
+        if (sym) {
+          const d2 = v.distanceTo(centerSym);
+          if (d2 <= radius) affectedSym.push({i, d: d2});
+        }
+      }
+
+      if (tool === 'inflate' || tool === 'deflate') {
+        const dirMul = (tool === 'inflate') ? 1 : -1;
+        for (const a of affected) {
+          const f = falloff(a.d, radius) * strength;
+          vn.set(n[a.i], n[a.i+1], n[a.i+2]);
+          p[a.i]   += vn.x * f * dirMul;
+          p[a.i+1] += vn.y * f * dirMul;
+          p[a.i+2] += vn.z * f * dirMul;
+        }
+        if (sym) {
+          for (const a of affectedSym) {
+            const f = falloff(a.d, radius) * strength;
+            vn.set(n[a.i], n[a.i+1], n[a.i+2]);
+            p[a.i]   += (-vn.x) * f * dirMul;
+            p[a.i+1] += ( vn.y) * f * dirMul;
+            p[a.i+2] += ( vn.z) * f * dirMul;
+          }
+        }
+      } else if (tool === 'smooth') {
+        if (affected.length > 0) {
+          const centroid = new THREE.Vector3();
+          for (const a of affected) { centroid.x += p[a.i]; centroid.y += p[a.i+1]; centroid.z += p[a.i+2]; }
+          centroid.multiplyScalar(1 / affected.length);
+          for (const a of affected) {
+            const f = falloff(a.d, radius) * strength * 0.5;
+            p[a.i]   += (centroid.x - p[a.i])   * f;
+            p[a.i+1] += (centroid.y - p[a.i+1]) * f;
+            p[a.i+2] += (centroid.z - p[a.i+2]) * f;
+          }
+        }
+        if (sym && affectedSym.length > 0) {
+          const centroid2 = new THREE.Vector3();
+          for (const a of affectedSym) { centroid2.x += p[a.i]; centroid2.y += p[a.i+1]; centroid2.z += p[a.i+2]; }
+          centroid2.multiplyScalar(1 / affectedSym.length);
+          for (const a of affectedSym) {
+            const f = falloff(a.d, radius) * strength * 0.5;
+            p[a.i]   += (centroid2.x - p[a.i])   * f;
+            p[a.i+1] += (centroid2.y - p[a.i+1]) * f;
+            p[a.i+2] += (centroid2.z - p[a.i+2]) * f;
+          }
+        }
+      }
+
+      pos.needsUpdate = true;
+      geo.computeVertexNormals();
+      nor.needsUpdate = true;
+    }
+
+    renderer.domElement.addEventListener('pointerdown', (e)=>{
+      updateBrush(e);
+      if (lastHit) {
+        isSculpting = true;
+        controls.enabled = false;
+        sculptStroke(lastHit);
+      }
+    });
+    renderer.domElement.addEventListener('pointermove', (e)=>{
+      updateBrush(e);
+      if (isSculpting && lastHit) sculptStroke(lastHit);
+    });
+    addEventListener('pointerup', ()=>{ isSculpting = false; controls.enabled = true; });
+    addEventListener('pointerleave', ()=>{ isSculpting = false; controls.enabled = true; brushViz.visible = false; });
+
+    addEventListener('resize', ()=>{ camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+    function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); } loop();
+  </script>
+</body>
+</html>
